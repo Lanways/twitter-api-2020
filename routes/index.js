@@ -17,3 +17,4 @@ router.post('/api/followships', authenticated, userController.addFollowing)
 router.use('/', apiErrorHandler)
 
 module.exports = router
+  
