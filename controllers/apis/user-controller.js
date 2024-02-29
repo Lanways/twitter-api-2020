@@ -5,317 +5,66 @@ const { imgurFileHandler } = require('../../helpers/file-helpers')
 const helpers = require('../../_helpers')
 // sequelize Op 比較功能
 const { Op } = require('sequelize')
+const userServices = require('../../services/user-services')
 
 const userController = {
-  signIn: (req, res,) => {
-    try {
-      const userData = helpers.getUser(req).toJSON()
-      if (userData.role === 'admin') throw new Error('Account does not exist!')
-      delete userData.password
-      const token = jwt.sign(userData, process.env.JWT_SECRET, { expiresIn: '30d' })
-      res.status(200).json({
-        status: 'success',
-        data: {
-          token,
-          user: userData,
-        }
-      })
-    } catch (err) {
-      res.status(500).json({ status: 'error', error: err.message })
-    }
+  signIn: (req, res, next) => {
+    if (helpers.getUser(req).role === 'admin') return res.status(400).json({ status: 'error', message: 'Account does not exist!' })
+    userServices.signIn(req, (err, data) => err ? next(err) : res.status(200).json(data))
   },
-  signUp: (req, res) => {
+  signUp: (req, res, next) => {
     const { name, email, password, account, checkPassword } = req.body
-    new Promise((resolve, reject) => {
-      if (!account) {
-        reject(new Error('Account is required'))
-      } else if (account.length > 50) {
-        reject(new Error(`Account too long`))
-      }
-      if (name && name.length > 50) reject(new Error(`Name too long`))
-      if (password !== checkPassword) reject(new Error('Password do not match'))
-      resolve()
-    })
-      .then(() => {
-        return Promise.all([
-          User.findOne({ where: { email } }),
-          User.findOne({ where: { account } })
-        ])
-      })
-      .then(([user, account]) => {
-        if (user) throw new Error('Email already exists!')
-        if (account) throw new Error('Account already registered!')
-        return bcrypt.hash(password, 10)
-      })
-      .then(hash => {
-        return User.create({
-          name,
-          email,
-          role: 'user',
-          account,
-          password: hash
-        })
-      })
-      .then((user) => {
-        user = user.toJSON()
-        delete user.password
-        return res.status(200).json(user)
-      })
-      .catch(err => {
-        res.status(500).json({ status: 'error', error: err.message })
-      })
+    if (!account) {
+      return res.status(400).json({ status: 'error', message: 'Account is required' })
+    } else if (account.length > 50) {
+      return res.status(400).json({ status: 'error', message: 'Account too long' })
+    }
+    if (name && name.length > 50) return res.status(400).json({ status: 'error', message: 'Name too long' })
+    if (password !== checkPassword) return res.status(400).json({ status: 'error', message: 'Password do not match' })
+
+    userServices.signUp({ name, email, password, account }, (err, data) => err ? next(err) : res.status(200).json(data))
   },
-  getUser: (req, res) => {
-    return Promise.all([
-      User.findByPk(req.params.id, { attributes: { exclude: ['password'] } }),
-      Followship.count({ where: { followerId: req.params.id } }),
-      Followship.count({ where: { followingId: req.params.id } }),
-      Tweet.findAll({ where: { UserId: req.params.id } })
-    ])
-      .then(([user, follower, following, Tweet]) => {
-        if (!user) throw new Error(`User didn't exist`)
-        user = user.toJSON()
-        user.followerCount = follower // 追蹤數量
-        user.followingCount = following // 被追蹤數量
-        user.TweetCount = Tweet.length
-        const currentUser = helpers.getUser(req)
-        user.isFollowing = currentUser.Followings ? currentUser.Followings.some(f => f.id === user.id) : false
-        return res.status(200).json(user)
-      })
-      .catch(err => res.status(500).json({ status: 'error', error: err.message }))
+  getUser: (req, res, next) => {
+    userServices.getUser(req, (err, data) => err ? next(err) : res.status(200).json(data))
   },
-  getUserTweets: (req, res) => {
-    return Promise.all([
-      User.findByPk(req.params.id, {
-        include: [
-          { model: Tweet, include: [Reply, Like], },
-          { model: Like }
-        ],
-        order: [[Tweet, 'createdAt', 'DESC']],
-      }),
-      User.findByPk(helpers.getUser(req).id, {
-        include: [{ model: Like, attributes: ['TweetId'] }]
-      })
-    ])
-      .then(([user, currentUser]) => {
-        if (!user) throw new Error(`User didn't exist`)
-        if (!currentUser) throw new Error(`Havn't liked any tweet`)
-        const tweetsData = user.Tweets.map(tweet => ({
-          id: tweet.id,
-          UserId: tweet.UserId,
-          description: tweet.description,
-          name: user.name,
-          account: user.account,
-          avatar: user.avatar,
-          createdAt: tweet.createdAt,
-          replyCount: tweet.Replies.length,
-          likeCount: tweet.Likes.length,
-          currentUserIsLiked: currentUser.Likes.some(like => like.TweetId === tweet.id)
-        }))
-        return res.status(200).json(tweetsData)
-      })
-      .catch(err => res.status(500).json({ status: 'error', error: err }))
+  getUserTweets: (req, res, next) => {
+    userServices.getUserTweets(req, (err, data) => err ? next(err) : res.status(200).json(data))
   },
-  getUserReplies: (req, res) => {
-    User.findByPk(req.params.id, {
-      include: [{
-        model: Reply, include: { model: Tweet, attributes: ['id'], include: { model: User, attributes: ['account'] } }
-      }],
-      order: [[Reply, 'createdAt', 'DESC']]
-    })
-      .then(user => {
-        if (!user) throw new Error(`User didn't exist`)
-        const repliesData = user.Replies.map(reply => {
-          const replyJSON = reply.toJSON()
-          return {
-            ...replyJSON,
-            replyName: user.name,
-            replyAccount: user.account,
-            replyAvatar: user.avatar,
-          }
-        })
-        return res.status(200).json(repliesData)
-      })
-      .catch(err => res.status(500).json({ status: 'error', error: err }))
+  getUserReplies: (req, res, next) => {
+    userServices.getUserReplies(req, (err, data) => err ? next(err) : res.status(200).json(data))
   },
-  getUserLikes: (req, res) => {
-    User.findByPk(req.params.id, {
-      include: [
-        {
-          model: Like,
-          include: [{ model: Tweet, include: [User, Like, Reply] }]
-        }],
-      order: [[Like, 'createdAt', 'DESC']]
-    })
-      .then((user) => {
-        if (!user) throw new Error(`User didn't exist`)
-        const likesData = user.Likes.map(like => {
-          return {
-            UserId: like.UserId,
-            TweetId: like.TweetId,
-            createdAt: like.createdAt,
-            description: like.Tweet.description,
-            tweetOwnerName: like.Tweet.User.name,
-            tweetOwnerAccount: like.Tweet.User.account,
-            tweetOwnerAvatar: like.Tweet.User.avatar,
-            likeCount: like.Tweet.Likes.length,
-            replyCount: like.Tweet.Replies.length,
-            currentUserIsLiked: like.Tweet.Likes.some(l => l.UserId === helpers.getUser(req).id)
-          }
-        })
-        return res.status(200).json(likesData)
-      })
-      .catch(err => res.status(500).json({ status: 'error', error: err }))
+  getUserLikes: (req, res, next) => {
+    userServices.getUserLikes(req, (err, data) => err ? next(err) : res.status(200).json(data))
   },
-  getUserFollowings: (req, res) => {
-    return Promise.all([
-      User.findByPk(req.params.id, {
-        attributes: ['id', 'name',],
-        include: [
-          {
-            model: User, as: 'Followings',
-            attributes: ['id', 'name', 'introduction', 'avatar'],
-            through: { attributes: ['createdAt'] },
-          },
-        ]
-      }),
-      Tweet.count({ where: { UserId: req.params.id } })
-    ])
-      .then(([user, tweetCount]) => {
-        if (!user) throw new Error(`User didn't exist`)
-        let followings = user.Followings.map(following => ({
-          followingId: following.id,
-          followingName: following.name,
-          followingAvatar: following.avatar,
-          followingIntroduction: following.introduction,
-          followshipCreatedAt: following.Followship.createdAt,
-          isFollowing: helpers.getUser(req).Followings.some(f => f.id === following.id)
-        }))
-        followings = followings.sort((a, b) =>
-          new Date(b.followshipCreatedAt) - new Date(a.followshipCreatedAt))
-        const result = {
-          userId: user.id,
-          userName: user.name,
-          tweetCount: tweetCount,
-          followings: followings
-        }
-        res.status(200).json(result)
-      })
-      .catch(err => res.status(500).json({ status: 'error', error: err }))
+  getUserFollowings: (req, res, next) => {
+    userServices.getUserFollowings(req, (err, data) => err ? next(err) : res.status(200).json(data))
   },
-  getUserFollowers: (req, res) => {
-    return Promise.all([
-      User.findByPk(req.params.id, {
-        include: [{ model: User, as: 'Followers', }],
-      }),
-      Tweet.count({ where: { UserId: req.params.id } })
-    ])
-      .then(([user, tweetCount]) => {
-        if (!user) throw new Error(`User didn't exist`)
-        const followers = user.Followers.map(follower => {
-          return {
-            followerName: follower.name,
-            followerAvatar: follower.avatar,
-            followerIntroduction: follower.introduction,
-            followerId: follower.Followship.followerId,
-            createdAt: follower.Followship.createdAt,
-            isFollowed: helpers.getUser(req).Followings.some(f => f.id === follower.id)
-          }
-        })
-        followers.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-        const result = {
-          userId: user.id,
-          userName: user.name,
-          tweetCount: tweetCount,
-          followers: followers
-        }
-        return res.status(200).json(result)
-      })
-      .catch(err => res.status(500).json({ status: 'error', error: err }))
+  getUserFollowers: (req, res, next) => {
+    userServices.getUserFollowers(req, (err, data) => err ? next(err) : res.status(200).json(data))
   },
-  editUser: (req, res) => {
-    return User.findByPk(req.params.id)
-      .then(user => {
-        if (!user) throw new Error(`User didn't exist`)
-        user = user.toJSON()
-        delete user.password
-        return res.status(200).json({ status: 'success', user })
-      })
-      .catch(err => res.status(500).json({ status: 'error', error: err }))
+  editUser: (req, res, next) => {
+    userServices.editUser(req, (err, data) => err ? next(err) : res.status(200).json(data))
   },
-  putUser: (req, res) => {
+  putUser: (req, res, next) => {
     const { name, introduction } = req.body
-    const files = req.files || {}
-    if (!name) throw new Error('User name is required')
-    return Promise.all([
-      User.findByPk(helpers.getUser(req).id),
-      files.avatar ? imgurFileHandler(files.avatar[0]) : null,
-      files.banner ? imgurFileHandler(files.banner[0]) : null
-    ])
-      .then(([user, avatarPath, bannerPath]) => {
-        if (!user) throw new Error("User didn't exist!")
-        if (user.id !== Number(req.params.id)) throw new Error('Edit self profile only!')
-        return user.update({
-          name,
-          introduction,
-          avatar: avatarPath || user.avatar,
-          banner: bannerPath || user.banner
-        })
-      })
-      .then((updatedUser) => {
-        updatedUser = updatedUser.toJSON()
-        delete updatedUser.password
-        return res.status(200).json(updatedUser)
-      })
-      .catch(err => res.status(500).json({ status: 'error', error: err.message }))
+    if (!name) return res.status(400).json({ status: 'error', message: 'User name is required' })
+
+    userServices.putUser(req, { name, introduction }, (err, data) => err ? next(err) : res.status(200).json(data))
+
   },
-  getSetUser: (req, res) => {
-    return User.findByPk(helpers.getUser(req).id, { attributes: ['id', 'name', 'account', 'email'] })
-      .then((user) => {
-        if (!user) throw new Error("User didn't exist!")
-        res.status(200).json(user)
-      })
-      .catch(err => res.status(500).json({ status: 'error', error: err.message }))
+  getSetUser: (req, res, next) => {
+    userServices.getSetUser(req, (err, data) => err ? next(err) : res.status(200).json(data))
   },
-  putSetUser: (req, res) => {
+  putSetUser: (req, res, next) => {
     const { account, name, email, password, checkPassword } = req.body
-    return new Promise((resolve, reject) => {
-      if (!account || !name || !email || !password) reject(new Error("The fields for account, name, password and email are required!"))
-      if (account.length > 50) reject(new Error("Account too long"))
-      if (name && name.length > 50) reject(new Error(`Name too long`))
-      if (password !== checkPassword) reject(new Error("Password do not match"))
-      resolve()
-    })
-      .then(() => {
-        return Promise.all([
-          User.findByPk(helpers.getUser(req).id, { attributes: ['id', 'name', 'account', 'email'] }),
-          User.findOne({
-            where: { email, id: { [Op.ne]: helpers.getUser(req).id } }
-          }),
-          User.findOne({
-            where: { account, id: { [Op.ne]: helpers.getUser(req).id } }
-          })
-        ])
-      })
-      .then(([user, userEmail, userAccount]) => {
-        if (userEmail) throw new Error('Email already exists!')
-        if (userAccount) throw new Error('Account already registered!')
-        if (!user) throw new Error("User didn't exist!")
-        updatedUser = user
-        return bcrypt.hash(password, 10)
-      })
-      .then((hash) => {
-        return updatedUser.update({
-          name,
-          account,
-          email,
-          password: hash
-        })
-      })
-      .then((updatedUser) => {
-        res.status(200).json(updatedUser)
-      })
-      .catch(err => res.status(500).json({ status: 'error', error: err.message }))
+    if (!account || !name || !email || !password) {
+      return res.status(400).json({ status: 'error', message: 'The fields for account, name, password and email are required!' })
+    }
+    if (account.length > 50) return res.status(400).json({ status: 'error', message: 'Account too long' })
+    if (name && name.length > 50) return res.status(400).json({ status: 'error', message: 'Name too long' })
+    if (password !== checkPassword) return res.status(400).json({ status: 'error', message: 'Password do not match' })
+
+    userServices.putSetUser(req, { account, name, email, password }, (err, data) => err ? next(err) : res.status(200).json(data))
   },
   addLike: (req, res) => {
     return Promise.all([
